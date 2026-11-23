@@ -3,7 +3,7 @@
 | Deliverable | Status | Evidence |
 | --- | --- | --- |
 | Hardened VPS | BLOCKED | Network restrictions prevented SSH before authentication. No server changes were applied. |
-| Corporate website | IN PROGRESS | English pages, theme toggle, SEO, form handling and container definition. Local Node test suite passed. Live ingress and TLS are pending. |
+| Corporate website | IN PROGRESS | Responsive English site, filterable service catalog, engagement methodology, SEO metadata and assessment form with receipt references. Local Node test suite passed. Live ingress and TLS are pending. |
 | Client portal MVP | IN PROGRESS | FastAPI, PostgreSQL schema, tenant RBAC and RLS, report export, audit events and a staging dashboard. Integration checks run in Docker-based CI. Managed identity and MFA are pending. |
 | Assessment workflow | IN PROGRESS | Authorization and scope records, manual findings, remediation status, reports and engagement templates. |
 | CI/CD | IN PROGRESS | GitHub workflow for validation, builds, isolation smoke tests and defensive repository/image checks. Deployment follows the release runbook. |

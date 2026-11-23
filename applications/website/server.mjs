@@ -1,23 +1,33 @@
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { isIP } from 'node:net';
-import { access, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { access, lstat, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { pagePaths, renderForm, renderNotFound, renderPage, services } from './pages.mjs';
+import { pagePaths, publicOrigin, renderForm, renderNotFound, renderPage } from './pages.mjs';
+import { services } from './services.mjs';
 
-const publicOrigin = 'https://raksent.com';
-const serviceNames = new Set([...services.map(({slug}) => slug), 'other']);
+const serviceNames = new Set([...services.map(({ slug }) => slug), 'other']);
+const inquiryFields = {
+  name: { label: 'name', maximum: 120 },
+  email: { label: 'work email', maximum: 254 },
+  organization: { label: 'organization', maximum: 160 },
+  service: { label: 'service', maximum: 100 },
+  message: { label: 'assessment description', maximum: 3000 },
+};
+const receiptPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 const assetSpecs = [
   ['/assets/site.css', 'site.css', 'text/css; charset=utf-8'],
   ['/assets/theme.js', 'theme.js', 'text/javascript; charset=utf-8'],
+  ['/assets/mark.svg', 'mark.svg', 'image/svg+xml'],
+  ['/assets/perimeter.jpg', 'perimeter.jpg', 'image/jpeg'],
 ];
 const assets = new Map(await Promise.all(assetSpecs.map(async ([path, file, type]) => [
   path, [type, await readFile(new URL(`./public/${file}`, import.meta.url))],
 ])));
 const headers = {
-  'Content-Security-Policy': "default-src 'none'; style-src 'self'; script-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+  'Content-Security-Policy': "default-src 'none'; img-src 'self'; style-src 'self'; script-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
   'Referrer-Policy': 'strict-origin-when-cross-origin',
   'X-Content-Type-Options': 'nosniff',
   'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
@@ -33,20 +43,39 @@ function send(req, res, status, body, type = 'text/html; charset=utf-8') {
   res.end(req.method === 'HEAD' ? undefined : body);
 }
 
-export function validateInquiry(body) {
+function parseInquiry(body) {
   const data = new URLSearchParams(body);
-  if (data.get('website')) return null;
-  const limits = { name: 120, email: 254, organization: 160, service: 100, message: 3000 };
-  const result = {};
-  for (const [key, max] of Object.entries(limits)) {
-    if (data.getAll(key).length !== 1) return null;
-    const value = data.get(key).trim();
-    if (!value || value.length > max || value.includes('\u0000')) return null;
-    result[key] = value;
+  if (data.getAll('website').some(Boolean)) return null;
+
+  const values = {};
+  const errors = {};
+  for (const [name, { label, maximum }] of Object.entries(inquiryFields)) {
+    const entries = data.getAll(name);
+    const value = entries[0]?.trim();
+    if (!value || entries.length !== 1 || value.includes('\u0000')) {
+      errors[name] = `Enter a valid ${label}.`;
+    } else if (value.length > maximum) {
+      values[name] = value.slice(0, maximum);
+      errors[name] = `Use up to ${maximum} characters.`;
+    } else {
+      values[name] = value;
+    }
   }
-  if (!/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(result.email)) return null;
-  if (result.message.length < 15 || !serviceNames.has(result.service)) return null;
-  return result;
+  if (!errors.email && !/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(values.email)) {
+    errors.email = 'Enter a valid email address.';
+  }
+  if (!errors.message && values.message.length < 15) {
+    errors.message = 'Describe what you want to assess in at least 15 characters.';
+  }
+  if (!errors.service && !serviceNames.has(values.service)) {
+    errors.service = 'Choose a service from the list.';
+  }
+  return { values, errors };
+}
+
+export function validateInquiry(body) {
+  const parsed = parseInquiry(body);
+  return parsed && !Object.keys(parsed.errors).length ? parsed.values : null;
 }
 
 async function readBody(req, limit) {
@@ -90,7 +119,9 @@ export function website({ origin = publicOrigin, leadDirectory, trustProxy = fal
     const url = new URL(req.url, origin);
     const path = url.pathname;
     if (req.method === 'POST' && path === '/request-assessment') {
-      const reply = (code, error) => send(req, res, code, renderForm({ error, enabled: !!leadDirectory }));
+      const reply = (code, error, form = {}) => send(req, res, code, renderForm({
+        error, enabled: !!leadDirectory, ...form,
+      }));
       if (!leadDirectory) return reply(503, 'Inquiries are temporarily unavailable.');
       if (req.headers.origin !== origin) return reply(403, 'Open the assessment page and submit the form again.');
       if (req.headers['content-type']?.split(';')[0] !== 'application/x-www-form-urlencoded') {
@@ -100,15 +131,18 @@ export function website({ origin = publicOrigin, leadDirectory, trustProxy = fal
         res.setHeader('Retry-After', '60');
         return reply(429, 'Too many submissions. Please try again in one minute.');
       }
-      const body = await readBody(req, 16_384);
+      const body = await readBody(req, 40_960);
       if (body === null) return reply(413, 'The submitted form is too large.');
-      const inquiry = validateInquiry(body);
-      if (!inquiry) return reply(400, 'Check the required fields and use a valid work email.');
-      if (storing) return reply(503, 'Please retry in a moment.');
+      const form = parseInquiry(body);
+      if (!form) return reply(400, 'Reload the assessment form and try again.');
+      if (Object.keys(form.errors).length) return reply(400, '', form);
+
+      const inquiry = form.values;
+      if (storing) return reply(503, 'Please retry in a moment.', { values: inquiry });
       storing = true;
       try {
         if ((await readdir(leadDirectory)).length >= 1000) {
-          return reply(503, 'Inquiries are temporarily unavailable.');
+          return reply(503, 'Inquiries are temporarily unavailable.', { values: inquiry });
         }
         const id = randomUUID();
         const temporary = join(leadDirectory, `.${id}.tmp`);
@@ -120,7 +154,9 @@ export function website({ origin = publicOrigin, leadDirectory, trustProxy = fal
           await rm(temporary, { force: true }).catch(() => {});
           throw error;
         }
-        res.writeHead(303, { ...headers, 'Cache-Control': 'no-store', Location: '/request-assessment/received' });
+        res.writeHead(303, {
+          ...headers, 'Cache-Control': 'no-store', Location: `/request-assessment/received?reference=${id}`,
+        });
         return res.end();
       } finally {
         storing = false;
@@ -149,13 +185,21 @@ export function website({ origin = publicOrigin, leadDirectory, trustProxy = fal
       return send(req, res, 200, `<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${pagePaths.map(item => `<url><loc>${publicOrigin}${item}</loc></url>`).join('')}</urlset>`, 'application/xml; charset=utf-8');
     }
     if (path === '/request-assessment') {
-      return send(req, res, 200, renderForm({ selected: url.searchParams.get('service'), enabled: !!leadDirectory }));
+      const service = url.searchParams.get('service');
+      return send(req, res, 200, renderForm({
+        values: { service: serviceNames.has(service) ? service : '' }, enabled: !!leadDirectory,
+      }));
     }
     if (path === '/request-assessment/received') {
       res.setHeader('X-Robots-Tag', 'noindex');
-      return send(req, res, 200, renderForm({ status: 'Your inquiry has been received.' }));
+      const reference = url.searchParams.get('reference') || '';
+      const exists = leadDirectory && receiptPattern.test(reference) &&
+        await lstat(join(leadDirectory, `${reference}.json`)).then(stat => stat.isFile(), () => false);
+      return exists
+        ? send(req, res, 200, renderForm({ receipt: reference }))
+        : send(req, res, 404, renderNotFound());
     }
-    const page = renderPage(path);
+    const page = renderPage(path, { group: url.searchParams.get('group') });
     return send(req, res, page ? 200 : 404, page || renderNotFound());
   }
 

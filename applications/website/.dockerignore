@@ -1,6 +1,7 @@
 **
 !Dockerfile
 !pages.mjs
+!services.mjs
 !server.mjs
 !public/
 !public/**
