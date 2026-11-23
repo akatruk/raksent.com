@@ -1,0 +1,59 @@
+name: Test and scan
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Check website and inventory
+        run: |
+          bash -n scripts/inventory.sh
+          node --test tests/website.test.mjs
+          node --check applications/portal/public/portal.js
+          python3 -m py_compile applications/api/app.py tests/portal_smoke.py
+      - name: Build services and verify application boundaries
+        env:
+          POSTGRES_PASSWORD: ci-admin-ephemeral
+          PORTAL_DB_PASSWORD: ci-app-ephemeral
+        run: |
+          docker compose -f infrastructure/docker/compose.yaml -f infrastructure/docker/portal.compose.yaml up --build --wait
+          curl --fail --silent http://127.0.0.1:18080/readyz
+          python3 tests/portal_smoke.py
+          compose=(docker compose -f infrastructure/docker/compose.yaml -f infrastructure/docker/portal.compose.yaml)
+          "${compose[@]}" exec -T postgres createdb -U postgres -T template0 raksent_restore
+          "${compose[@]}" exec -T postgres pg_dump -U postgres -Fc raksent |
+            "${compose[@]}" exec -T postgres pg_restore -U postgres --exit-on-error -d raksent_restore
+          test "$("${compose[@]}" exec -T postgres psql -X -U postgres -Atq -d raksent_restore \
+            -c 'SELECT count(*) FROM portal.findings')" = 1
+      - name: Clean up CI services
+        if: always()
+        env:
+          POSTGRES_PASSWORD: ci-admin-ephemeral
+          PORTAL_DB_PASSWORD: ci-app-ephemeral
+        run: docker compose -f infrastructure/docker/compose.yaml -f infrastructure/docker/portal.compose.yaml down --volumes
+      - name: Static analysis
+        run: |
+          python3 -m venv "$RUNNER_TEMP/raksent-analysis"
+          "$RUNNER_TEMP/raksent-analysis/bin/python" -m pip install bandit pip-audit
+          "$RUNNER_TEMP/raksent-analysis/bin/bandit" -r applications/api
+          "$RUNNER_TEMP/raksent-analysis/bin/pip-audit" -r applications/api/requirements.txt
+      - name: Repository and container checks
+        run: |
+          docker build -t raksent-website:check applications/website
+          docker build -f applications/api/Dockerfile -t raksent-portal:check .
+          docker save -o "$RUNNER_TEMP/raksent-website.tar" raksent-website:check
+          docker save -o "$RUNNER_TEMP/raksent-portal.tar" raksent-portal:check
+          trivy_image=aquasec/trivy:0.74.0
+          docker run --rm -v "$PWD:/src:ro" "$trivy_image" fs \
+            --scanners secret,misconfig --severity HIGH,CRITICAL --exit-code 1 /src
+          for service in website portal; do
+            docker run --rm -v "$RUNNER_TEMP:/scan:ro" "$trivy_image" image \
+              --input "/scan/raksent-${service}.tar" --severity HIGH,CRITICAL --exit-code 1
+          done

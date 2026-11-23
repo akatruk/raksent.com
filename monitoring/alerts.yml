@@ -1,0 +1,11 @@
+groups:
+  - name: raksent
+    rules:
+      - alert: RaksentWebsiteNotReady
+        expr: probe_success{job="raksent_health"} == 0 or up{job="raksent_health"} == 0
+        for: 3m
+        labels:
+          severity: page
+        annotations:
+          summary: RAKSENT website readiness check failed
+          description: Check ingress and website health, container logs and lead-volume capacity.

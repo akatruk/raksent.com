@@ -1,0 +1,56 @@
+services:
+  portal:
+    build:
+      context: ../..
+      dockerfile: applications/api/Dockerfile
+    environment:
+      PGHOST: postgres
+      PGDATABASE: raksent
+      PORTAL_DB_PASSWORD: ${PORTAL_DB_PASSWORD:?set PORTAL_DB_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:${PORTAL_LISTEN_PORT:-18081}:8081"
+    networks: [portal]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    read_only: true
+    init: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    restart: unless-stopped
+    mem_limit: 256m
+    pids_limit: 64
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/healthz', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging:
+      options: {max-size: "10m", max-file: "3"}
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: raksent
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      PORTAL_DB_PASSWORD: ${PORTAL_DB_PASSWORD:?set PORTAL_DB_PASSWORD in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../../applications/api/init.sql:/docker-entrypoint-initdb.d/10-init.sql:ro
+      - ../../applications/api/schema.sql:/docker-entrypoint-initdb.d/schema/schema.sql:ro
+    networks: [portal]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "postgres", "-d", "raksent"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+    mem_limit: 512m
+    pids_limit: 96
+    logging:
+      options: {max-size: "10m", max-file: "3"}
+
+networks:
+  portal:
+volumes:
+  postgres_data:

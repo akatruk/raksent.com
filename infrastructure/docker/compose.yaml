@@ -1,0 +1,31 @@
+name: raksent
+services:
+  website:
+    build: ../../applications/website
+    environment:
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-https://raksent.com}
+      TRUST_PROXY: "1"
+    ports:
+      - "127.0.0.1:${SITE_LISTEN_PORT:-18080}:8080"
+    volumes:
+      - leads:/var/lib/raksent/leads
+    networks: [website]
+    read_only: true
+    init: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    restart: unless-stopped
+    mem_limit: 192m
+    pids_limit: 48
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/readyz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging:
+      options: {max-size: "10m", max-file: "3"}
+
+networks:
+  website:
+volumes:
+  leads:

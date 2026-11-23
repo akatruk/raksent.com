@@ -1,0 +1,26 @@
+---
+- name: Stage RAKSENT on loopback after inventory review
+  hosts: raksent
+  gather_facts: false
+  serial: 1
+  vars:
+    website_directory: "{{ release_path }}/infrastructure/docker"
+  tasks:
+    - name: Require a reviewed release directory and express staging approval
+      ansible.builtin.assert:
+        that:
+          - (release_path | default('')) is match('^/[A-Za-z0-9_./-]+$')
+          - stage_approved | default(false) | bool
+        fail_msg: Set release_path and stage_approved only after reviewing the inventory and loopback port.
+    - name: Validate Compose inputs
+      ansible.builtin.command:
+        argv: [docker, compose, config, --quiet]
+        chdir: "{{ website_directory }}"
+      changed_when: false
+      check_mode: false
+    - name: Start website and wait for readiness
+      ansible.builtin.command:
+        argv: [docker, compose, up, -d, --build, --wait, website]
+        chdir: "{{ website_directory }}"
+      register: start_site
+      changed_when: "'Started' in start_site.stderr or 'Created' in start_site.stderr or 'Built' in start_site.stderr or 'Recreated' in start_site.stderr"

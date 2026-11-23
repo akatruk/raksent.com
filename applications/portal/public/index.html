@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Client portal | RAKSENT</title>
+<link rel="stylesheet" href="/portal.css">
+<script src="/portal.js" defer></script>
+</head>
+<body><main>
+<p class="brand">RAKSENT</p>
+<h1>Client portal</h1>
+<form id="login">
+<label for="token">Access token</label>
+<input id="token" type="password" required minlength="43" maxlength="43" autocomplete="off">
+<button type="submit">Open dashboard</button>
+</form>
+<p id="feedback" role="status"></p>
+<section id="dashboard" hidden>
+<button id="logout" type="button">Clear session</button>
+<h2 id="client"></h2>
+<h3>Engagements</h3>
+<ul id="engagements"></ul>
+<article id="report" hidden></article>
+</section>
+</main></body></html>

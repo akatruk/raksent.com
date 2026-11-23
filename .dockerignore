@@ -1,0 +1,8 @@
+**
+!applications/
+!applications/api/
+!applications/api/app.py
+!applications/api/requirements.txt
+!applications/portal/
+!applications/portal/public/
+!applications/portal/public/**
