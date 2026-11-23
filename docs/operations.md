@@ -31,7 +31,7 @@ Record host, check time in UTC, commands, observed state, exceptions, impact and
    ```
 
    Ansible equivalents are in [stage-website.yml](../infrastructure/ansible/stage-website.yml). Use the existing trusted SSH identity and a release checkout already on the host. Test dark and light themes, mobile navigation, HTTPS, the canonical domain redirect and a synthetic inquiry. Confirm controlled access to each lead and assign an owner to review new submissions. The website stores submissions in the `leads` volume. Enable it for real inquiries after retention, a lead notification channel and the privacy notice have been reviewed.
-3. Review changes to ingress with the owner of the existing listener. Merge [the ingress example](../infrastructure/docker/Caddyfile.example) if Caddy is the installed proxy. Validate the full configuration before a controlled reload. Verify HTTPS from a separate connection and check which upstream receives the traffic.
+3. Review changes to ingress with the owner of the existing listener. Merge [the ingress example](../infrastructure/docker/Caddyfile.example) if Caddy is the installed proxy. The example uses Let's Encrypt for both public hostnames. Check the public A/AAAA records, port ownership and reachability on TCP 80 and 443 before enabling automatic certificate issuance. Validate the full configuration before a controlled reload. After reload, verify the certificate issuer and hostname, the HTTP-to-HTTPS redirect, the www-to-apex redirect and the website response from a separate connection.
 4. Start monitoring after confirming headroom. Run from the repo root.
 
    ```sh

@@ -1,6 +1,13 @@
 # Merge this into the existing ingress configuration only after the VPS audit.
 # A conflicting site block or listener requires a separate migration plan.
+(raksent_letsencrypt) {
+	tls {
+		issuer acme https://acme-v02.api.letsencrypt.org/directory
+	}
+}
+
 raksent.com {
+	import raksent_letsencrypt
 	encode zstd gzip
 	header {
 		Strict-Transport-Security "max-age=31536000"
@@ -14,5 +21,6 @@ raksent.com {
 
 # Use this block only after checking the existing www site and certificate.
 www.raksent.com {
+	import raksent_letsencrypt
 	redir https://raksent.com{uri} permanent
 }
