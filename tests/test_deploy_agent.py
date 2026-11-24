@@ -5,6 +5,7 @@ import tempfile
 import time
 import unittest
 from importlib.machinery import SourceFileLoader
+from unittest import mock
 from importlib.util import module_from_spec, spec_from_loader
 from pathlib import Path
 
@@ -89,6 +90,41 @@ class CiResultTest(unittest.TestCase):
             {"run_number": 3, "status": "completed", "conclusion": "success"},
             {"run_number": 2, "status": "completed", "conclusion": "failure"},
         ]), "success")
+
+
+class DeployTest(unittest.TestCase):
+    def setUp(self):
+        self.workspace = tempfile.TemporaryDirectory()
+        self.state = Path(self.workspace.name)
+        self.previous = Path("/opt/raksent/releases/previous")
+        self.release = Path(f"/opt/raksent/releases/{COMMIT}")
+        self.activations = []
+
+    def tearDown(self):
+        self.workspace.cleanup()
+
+    def deploy(self, healthy_targets):
+        def switch_to(target, expected):
+            self.activations.append((target, expected))
+            return target in healthy_targets
+
+        with mock.patch.multiple(agent, STATE=self.state, prepare=lambda commit: self.release,
+                                 deployed=lambda: self.previous, switch_to=switch_to, prune=lambda keep: None):
+            agent.deploy(COMMIT)
+
+    def test_unhealthy_release_restores_the_previous_one_and_is_blocked(self):
+        with self.assertRaisesRegex(agent.DeployError, "rolled back to previous"):
+            self.deploy({self.previous})
+        self.assertEqual(self.activations, [(self.release, COMMIT), (self.previous, None)])
+        self.assertTrue((self.state / "blocked" / COMMIT).is_file())
+
+    def test_healthy_release_records_the_previous_one_and_clears_its_block(self):
+        (self.state / "blocked").mkdir()
+        (self.state / "blocked" / COMMIT).write_text("earlier failure\n")
+        self.deploy({self.release})
+        self.assertEqual(self.activations, [(self.release, COMMIT)])
+        self.assertFalse((self.state / "blocked" / COMMIT).exists())
+        self.assertEqual(agent.read_json(self.state / "previous.json"), {"release": str(self.previous)})
 
 
 class PruneTest(unittest.TestCase):
