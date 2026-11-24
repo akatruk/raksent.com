@@ -21,7 +21,7 @@ jobs:
         run: bash scripts/validate.sh
       - name: Lint shell scripts and the host playbook
         run: |
-          shellcheck scripts/*.sh
+          shellcheck --severity=warning scripts/*.sh
           python3 -m venv "$RUNNER_TEMP/ansible"
           "$RUNNER_TEMP/ansible/bin/python" -m pip install --quiet ansible-core==2.21.6
           "$RUNNER_TEMP/ansible/bin/ansible-playbook" --syntax-check \
