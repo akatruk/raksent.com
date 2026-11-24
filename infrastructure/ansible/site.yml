@@ -63,6 +63,7 @@
             dest: /root/node.tar.xz
             checksum: "sha256:{{ node_sha256 }}"
             mode: '0600'
+          check_mode: false
         - name: Unpack Node.js
           ansible.builtin.unarchive:
             src: /root/node.tar.xz
@@ -104,6 +105,7 @@
             dest: /root/caddy.tar.gz
             checksum: "sha512:{{ caddy_sha512 }}"
             mode: '0600'
+          check_mode: false
         - name: Unpack Caddy
           ansible.builtin.unarchive:
             src: /root/caddy.tar.gz
@@ -111,6 +113,7 @@
             remote_src: true
             include: [caddy]
             extra_opts: [--no-same-owner]
+          when: not ansible_check_mode
 
     - name: Check the active Caddy path
       ansible.builtin.stat:
