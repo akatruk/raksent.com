@@ -1,4 +1,4 @@
-FROM node:24-alpine
+FROM node:26-alpine
 ENV NODE_ENV=production HOST=0.0.0.0 PORT=8080 LEAD_DIR=/var/lib/raksent/leads
 WORKDIR /app
 # The site has no npm dependencies, so the bundled package managers are dead weight with their own CVEs.
