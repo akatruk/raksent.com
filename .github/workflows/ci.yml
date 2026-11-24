@@ -54,6 +54,7 @@ jobs:
           "$analysis/bandit" -q -r applications/api
           # The agent only opens fixed GitHub and loopback URLs and runs fixed argv commands without a shell.
           "$analysis/bandit" -q -s B310,B404,B603 infrastructure/ansible/files/raksent-deploy
+          "$analysis/bandit" -q infrastructure/ansible/files/raksent-lead-notify
           "$analysis/pip-audit" -r applications/api/requirements.txt
           "$analysis/semgrep" scan --metrics=off --error --severity ERROR \
             --config p/javascript --config p/python --config p/dockerfile --config p/github-actions

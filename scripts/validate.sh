@@ -10,7 +10,8 @@ node --check applications/portal/public/portal.js
 python3 - <<'PY'
 from pathlib import Path
 
-for filename in ("applications/api/app.py", "tests/portal_smoke.py", "infrastructure/ansible/files/raksent-deploy"):
+for filename in ("applications/api/app.py", "tests/portal_smoke.py", "infrastructure/ansible/files/raksent-deploy",
+                 "infrastructure/ansible/files/raksent-lead-notify"):
     source = Path(filename).read_bytes()
     compile(source, filename, "exec")
 PY

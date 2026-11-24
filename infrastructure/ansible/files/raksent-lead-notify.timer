@@ -1,0 +1,10 @@
+# Managed by infrastructure/ansible/site.yml; local edits are overwritten.
+[Unit]
+Description=Retry RAKSENT inquiry notifications that could not be sent
+
+[Timer]
+OnBootSec=5min
+OnUnitInactiveSec=15min
+
+[Install]
+WantedBy=timers.target

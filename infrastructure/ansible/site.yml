@@ -198,6 +198,69 @@
       when: not current_release.stat.exists and bootstrap_release | length > 0
       notify: Restart website
 
+    - name: Install fail2ban prerequisites
+      ansible.builtin.apt:
+        name: [python3-systemd, nftables]
+        install_recommends: false
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Create the fail2ban jail directory
+      ansible.builtin.file:
+        path: /etc/fail2ban/jail.d
+        state: directory
+        mode: '0755'
+
+    - name: Configure fail2ban for SSH before the package starts it
+      ansible.builtin.copy:
+        src: fail2ban-raksent.local
+        dest: /etc/fail2ban/jail.d/raksent.local
+        mode: '0644'
+      notify: Restart fail2ban
+
+    - name: Install fail2ban
+      ansible.builtin.apt:
+        name: fail2ban
+        install_recommends: false
+
+    - name: Create the RAKSENT configuration directory
+      ansible.builtin.file:
+        path: /etc/raksent
+        state: directory
+        mode: '0755'
+
+    - name: Install the inquiry notifier
+      ansible.builtin.copy:
+        src: raksent-lead-notify
+        dest: /usr/local/sbin/raksent-lead-notify
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Install the inquiry notifier units
+      ansible.builtin.copy:
+        src: "{{ item }}"
+        dest: "/etc/systemd/system/{{ item }}"
+        mode: '0644'
+      loop: [raksent-lead-notify.service, raksent-lead-notify.path, raksent-lead-notify.timer]
+      notify: Reload systemd
+
+    - name: Configure inquiry email delivery
+      ansible.builtin.copy:
+        content: "{{ lead_notify | to_nice_json }}\n"
+        dest: /etc/raksent/lead-notify.json
+        owner: root
+        group: raksent
+        mode: '0640'
+      vars:
+        lead_notify:
+          host: "{{ lead_notify_smtp_host }}"
+          port: "{{ lead_notify_smtp_port | default(587) | int }}"
+          user: "{{ lead_notify_smtp_user }}"
+          from: "{{ lead_notify_from }}"
+          to: "{{ lead_notify_to }}"
+      when: lead_notify_to | default('') | length > 0
+
     - name: Apply kernel network hardening
       ansible.builtin.copy:
         src: 60-raksent-hardening.conf
@@ -215,17 +278,36 @@
     - name: Apply pending service changes
       ansible.builtin.meta: flush_handlers
 
-    - name: Enable the ingress, website and release timer
+    - name: Enable the ingress, website, timers and fail2ban
       ansible.builtin.systemd:
         name: "{{ item }}"
         enabled: true
-      loop: [caddy.service, raksent-website.service, raksent-deploy.timer]
+      loop:
+        - caddy.service
+        - raksent-website.service
+        - raksent-deploy.timer
+        - fail2ban.service
+        - raksent-lead-notify.path
+        - raksent-lead-notify.timer
 
-    - name: Start Caddy and the release timer
+    - name: Start the ingress, timers and fail2ban
       ansible.builtin.systemd:
         name: "{{ item }}"
         state: started
-      loop: [caddy.service, raksent-deploy.timer]
+      loop:
+        - caddy.service
+        - raksent-deploy.timer
+        - fail2ban.service
+        - raksent-lead-notify.path
+        - raksent-lead-notify.timer
+
+    - name: Check that fail2ban watches SSH
+      ansible.builtin.command: fail2ban-client status sshd
+      changed_when: false
+      register: sshd_jail
+      retries: 5
+      delay: 2
+      until: sshd_jail.rc == 0
 
     - name: Check the website on loopback
       ansible.builtin.uri:
@@ -269,3 +351,8 @@
         name: caddy
         state: restarted
         daemon_reload: true
+
+    - name: Restart fail2ban
+      ansible.builtin.systemd:
+        name: fail2ban
+        state: restarted

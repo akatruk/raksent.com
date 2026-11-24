@@ -1,0 +1,36 @@
+# Managed by infrastructure/ansible/site.yml; local edits are overwritten.
+[Unit]
+Description=Email new RAKSENT website inquiries
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/raksent/lead-notify.json
+ConditionPathExists=/etc/raksent/smtp-password
+
+[Service]
+Type=oneshot
+User=raksent
+Group=raksent
+ExecStart=/usr/local/sbin/raksent-lead-notify
+LoadCredential=smtp-password:/etc/raksent/smtp-password
+StateDirectory=raksent-notify
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=

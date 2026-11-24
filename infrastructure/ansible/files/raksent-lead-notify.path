@@ -1,0 +1,10 @@
+# Managed by infrastructure/ansible/site.yml; local edits are overwritten.
+[Unit]
+Description=Watch for new RAKSENT website inquiries
+
+[Path]
+PathChanged=/var/lib/raksent/leads
+Unit=raksent-lead-notify.service
+
+[Install]
+WantedBy=paths.target

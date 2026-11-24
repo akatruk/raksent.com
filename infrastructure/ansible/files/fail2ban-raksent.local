@@ -1,0 +1,14 @@
+# Managed by infrastructure/ansible/site.yml; local edits are overwritten.
+[DEFAULT]
+banaction = nftables-multiport
+banaction_allports = nftables-allports
+backend = systemd
+
+[sshd]
+enabled = true
+mode = normal
+# Ubuntu logs sshd only to the journal, under ssh.service rather than the filter's default sshd.service.
+journalmatch = _SYSTEMD_UNIT=ssh.service + _COMM=sshd
+maxretry = 5
+findtime = 10m
+bantime = 1h

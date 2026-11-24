@@ -2,7 +2,7 @@
 
 ## Production layout
 
-Caddy terminates TLS with Let's Encrypt certificates, redirects `www` and HTTP to `https://raksent.com`, and proxies to the website on `127.0.0.1:18080`. Both run as sandboxed systemd services under dedicated system users. Caddy writes JSON access logs to `/var/log/caddy` and keeps them for 14 days. The website stores inquiries as private files in `/var/lib/raksent/leads`.
+Caddy terminates TLS with Let's Encrypt certificates, redirects `www` and HTTP to `https://raksent.com`, and proxies to the website on `127.0.0.1:18080`. Both run as sandboxed systemd services under dedicated system users. Caddy writes JSON access logs to `/var/log/caddy` and keeps them for 14 days. The website stores inquiries as private files in `/var/lib/raksent/leads`, and `raksent-lead-notify` emails each new one to the owner. fail2ban reads SSH failures from the journal and blocks an address for one hour after five failed logins within ten minutes. Failed key offers do not count.
 
 Each release lives in `/opt/raksent/releases/<commit>`. The `/opt/raksent/current` link points at the active release, and its `release.env` sets the revision reported at `/version`. Node.js and Caddy are pinned and checksum-verified in [site.yml](../infrastructure/ansible/site.yml), which also owns the units, Caddyfile, kernel network settings, journal retention and the release agent.
 
@@ -38,8 +38,23 @@ Operator commands on the VPS:
 | Return to the previous release and block the current commit | `raksent-deploy --rollback` |
 | Deploy a specific commit with a successful CI run | `raksent-deploy --release <40-character SHA>` |
 | Pause or resume automatic releases | `systemctl stop raksent-deploy.timer`, `systemctl start raksent-deploy.timer` |
+| SSH bans, and lifting one | `fail2ban-client status sshd`, `fail2ban-client set sshd unbanip <address>` |
+| Inquiry email delivery | `journalctl -u raksent-lead-notify`, `raksent-lead-notify --test` |
 
 A rollback holds until a new commit lands on `main`. A revert on `main` is the durable fix.
+
+## Inquiry notifications
+
+A new file in the inquiry directory starts `raksent-lead-notify`. It emails each inquiry once through the configured SMTP account. A timer retries failed deliveries every 15 minutes. Inquiry text goes only into the message body, and only the validated reply address reaches a mail header. The service stays idle until both its settings and the password exist.
+
+1. Set `lead_notify_smtp_host`, `lead_notify_smtp_port` (587 for STARTTLS, 465 for TLS), `lead_notify_smtp_user`, `lead_notify_from` and `lead_notify_to` in the private inventory, then apply `site.yml`.
+2. Store the SMTP password on the host so it never passes through Git or chat:
+
+   ```sh
+   ssh -t <ssh-alias> 'umask 077 && read -rsp "SMTP password: " p && printf %s "$p" > /etc/raksent/smtp-password && echo'
+   ```
+
+3. Send a test with `raksent-lead-notify --test`, then submit a synthetic inquiry and confirm it arrives once.
 
 ## Host changes
 
@@ -50,7 +65,7 @@ ansible-playbook -i infrastructure/ansible/inventory.ini infrastructure/ansible/
 ansible-playbook -i infrastructure/ansible/inventory.ini infrastructure/ansible/site.yml
 ```
 
-The playbook validates the Caddyfile before installing it, restarts only the services whose configuration changed, and then checks the website on loopback and HTTPS through Caddy. It does not change SSH, firewall rules or DNS; those changes need a separate reviewed plan with a recovery session.
+The playbook validates the Caddyfile before installing it and restarts only the services whose configuration changed. It then checks the website on loopback, HTTPS through Caddy and the fail2ban SSH jail. It does not change the SSH configuration, filtering policy or DNS; those changes need a separate reviewed plan with a recovery session. To remove brute-force protection, run `systemctl disable --now fail2ban`; stopping it also deletes its bans.
 
 ## Local and CI stack
 
