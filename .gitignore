@@ -13,5 +13,6 @@ __pycache__/
 !*.tfvars.example
 var/
 audit-output/
+infrastructure/ansible/inventory.ini
 backups/
 secrets/

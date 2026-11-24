@@ -1,0 +1,39 @@
+# Managed by infrastructure/ansible/site.yml; local edits are overwritten.
+[Unit]
+Description=RAKSENT website
+After=network.target
+
+[Service]
+User=raksent
+Group=raksent
+WorkingDirectory=/opt/raksent/current/applications/website
+EnvironmentFile=-/opt/raksent/current/release.env
+Environment=NODE_ENV=production HOST=127.0.0.1 PORT=18080 PUBLIC_ORIGIN=https://raksent.com TRUST_PROXY=1 LEAD_DIR=/var/lib/raksent/leads
+ExecStart=/opt/raksent/runtime/node/bin/node server.mjs
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+ReadWritePaths=/var/lib/raksent
+MemoryMax=192M
+TasksMax=48
+
+[Install]
+WantedBy=multi-user.target

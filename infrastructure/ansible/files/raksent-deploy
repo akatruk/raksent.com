@@ -1,0 +1,384 @@
+#!/usr/bin/env python3
+"""Deploy the newest RAKSENT main commit that passed CI, verify it and roll back on failure.
+
+raksent-deploy                 check main and deploy a new verified commit (run by raksent-deploy.timer)
+raksent-deploy --status        show the deployed, previous and blocked releases
+raksent-deploy --rollback      restore the previous release and block the current commit
+raksent-deploy --release SHA   deploy a commit that has a successful CI run
+"""
+
+import argparse
+import fcntl
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tarfile
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path, PurePosixPath
+
+REPOSITORY = "akatruk/raksent.com"
+BRANCH = "main"
+WORKFLOW = "ci.yml"
+ROOT = Path("/opt/raksent")
+RELEASES = ROOT / "releases"
+CURRENT = ROOT / "current"
+NODE = ROOT / "runtime" / "node" / "bin" / "node"
+STATE = Path(os.environ.get("STATE_DIRECTORY", "/var/lib/raksent-deploy"))
+SERVICE = "raksent-website.service"
+LOCAL_URL = "http://127.0.0.1:18080"
+KEEP_RELEASES = 5
+CI_RECHECK_SECONDS = 900
+MAX_ARCHIVE_BYTES = 64 << 20
+MAX_TREE_BYTES = 256 << 20
+MAX_ENTRIES = 5000
+COMMIT = re.compile(r"[0-9a-f]{40}")
+
+
+class DeployError(Exception):
+    """The release cannot be deployed or failed verification."""
+
+
+class Unavailable(Exception):
+    """GitHub could not be reached or rate limited the request."""
+
+
+def log(message):
+    print(message, flush=True)
+
+
+def read_json(path):
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def write_json(path, data):
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+    os.replace(temporary, path)
+
+
+def fetch_error(url, error):
+    if isinstance(error, urllib.error.HTTPError) and error.code not in (403, 429) and error.code < 500:
+        return DeployError(f"{url} returned HTTP {error.code}")
+    return Unavailable(f"{url} failed: {error}")
+
+
+def http_get(url, headers=None, limit=1 << 20):
+    request = urllib.request.Request(url, headers={"User-Agent": "raksent-deploy", **(headers or {})})
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            body = response.read(limit + 1)
+            if len(body) > limit:
+                raise DeployError(f"{url} returned more than {limit} bytes")
+            return response.status, response.headers, body
+    except urllib.error.HTTPError as error:
+        if error.code == 304:
+            return 304, error.headers, b""
+        raise fetch_error(url, error) from None
+    except OSError as error:
+        raise fetch_error(url, error) from None
+
+
+def github_api(path, headers=None):
+    return http_get(
+        f"https://api.github.com/repos/{REPOSITORY}/{path}",
+        {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", **(headers or {})},
+    )
+
+
+def main_head():
+    """Return the main commit. Unchanged answers come back as 304, which GitHub does not rate limit."""
+    cache_path = STATE / "head.json"
+    cache = read_json(cache_path)
+    headers = {"Accept": "application/vnd.github.sha"}
+    if cache.get("etag") and COMMIT.fullmatch(cache.get("commit", "")):
+        headers["If-None-Match"] = cache["etag"]
+    status, response_headers, body = github_api(f"commits/{BRANCH}", headers)
+    if status == 304:
+        return cache["commit"]
+    commit = body.decode("ascii", "replace").strip()
+    if not COMMIT.fullmatch(commit):
+        raise DeployError("GitHub returned an invalid commit for main")
+    write_json(cache_path, {"commit": commit, "etag": response_headers.get("ETag", "")})
+    return commit
+
+
+def ci_result(runs):
+    """Summarize the CI workflow runs of one commit as success, pending or failure."""
+    if not runs:
+        return "pending"
+    latest = max(runs, key=lambda run: run.get("run_number", 0))
+    if latest.get("status") != "completed":
+        return "pending"
+    return "success" if latest.get("conclusion") == "success" else "failure"
+
+
+def ci_state(commit, main_push_only=True):
+    query = f"head_sha={commit}&per_page=20"
+    if main_push_only:
+        query += f"&event=push&branch={BRANCH}"
+    _, _, body = github_api(f"actions/workflows/{WORKFLOW}/runs?{query}")
+    return ci_result(json.loads(body).get("workflow_runs", []))
+
+
+def download(commit, destination):
+    url = f"https://codeload.github.com/{REPOSITORY}/tar.gz/{commit}"
+    request = urllib.request.Request(url, headers={"User-Agent": "raksent-deploy"})
+    size = 0
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response, open(destination, "wb") as output:
+            while True:
+                chunk = response.read(1 << 16)
+                if not chunk:
+                    return
+                size += len(chunk)
+                if size > MAX_ARCHIVE_BYTES:
+                    raise DeployError("the release archive exceeds the size limit")
+                output.write(chunk)
+    except OSError as error:
+        raise fetch_error(url, error) from None
+
+
+def extract(archive, destination, commit):
+    """Unpack a GitHub source archive, accepting only regular files and directories under its top folder."""
+    top = f"{REPOSITORY.split('/')[1]}-{commit}"
+    with tarfile.open(archive, "r:gz") as tar:
+        if tar.pax_headers.get("comment") != commit:
+            raise DeployError("the archive does not belong to the requested commit")
+        members = tar.getmembers()
+        if len(members) > MAX_ENTRIES:
+            raise DeployError("the release archive has too many entries")
+        total = 0
+        destination.mkdir(mode=0o755)
+        for member in members:
+            path = PurePosixPath(member.name)
+            if path.is_absolute() or ".." in path.parts or not path.parts or path.parts[0] != top:
+                raise DeployError(f"unsafe archive path {member.name!r}")
+            relative = path.parts[1:]
+            if not relative:
+                continue
+            target = destination.joinpath(*relative)
+            if member.isdir():
+                target.mkdir(mode=0o755, parents=True, exist_ok=True)
+            elif member.isreg():
+                total += member.size
+                if total > MAX_TREE_BYTES:
+                    raise DeployError("the release exceeds the size limit")
+                target.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+                with tar.extractfile(member) as source, open(target, "xb") as output:
+                    shutil.copyfileobj(source, output)
+                target.chmod(0o755 if member.mode & 0o111 else 0o644)
+            else:
+                raise DeployError(f"unsupported archive entry {member.name!r}")
+
+
+def prepare(commit):
+    release = RELEASES / commit
+    if (release / "release.env").is_file():
+        return release
+    staging = RELEASES / f".staging-{commit}"
+    archive = RELEASES / f".{commit}.tar.gz"
+    shutil.rmtree(staging, ignore_errors=True)
+    try:
+        log(f"Downloading {commit}")
+        download(commit, archive)
+        extract(archive, staging, commit)
+        sources = sorted((staging / "applications" / "website").glob("*.mjs"))
+        if not sources:
+            raise DeployError("the release has no website sources")
+        for source in sources:
+            check = subprocess.run([str(NODE), "--check", str(source)], capture_output=True, text=True, timeout=60)
+            if check.returncode:
+                raise DeployError(f"{source.name} failed the syntax check: {check.stderr.strip()[:500]}")
+        (staging / "release.env").write_text(f"RELEASE_REVISION={commit}\n")
+        shutil.rmtree(release, ignore_errors=True)
+        staging.rename(release)
+    finally:
+        archive.unlink(missing_ok=True)
+        shutil.rmtree(staging, ignore_errors=True)
+    return release
+
+
+def revision(release):
+    try:
+        for line in (release / "release.env").read_text().splitlines():
+            key, _, value = line.partition("=")
+            if key == "RELEASE_REVISION" and COMMIT.fullmatch(value):
+                return value
+    except OSError:
+        pass
+    return release.name
+
+
+def deployed():
+    return CURRENT.resolve() if CURRENT.is_symlink() else None
+
+
+def healthy(expected=None, timeout=60):
+    """Wait for readiness and, when expected is set, for the website to report that revision."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(f"{LOCAL_URL}/readyz", timeout=5) as response:
+                ready = response.status == 200
+            if ready and expected is None:
+                return True
+            if ready:
+                with urllib.request.urlopen(f"{LOCAL_URL}/version", timeout=5) as response:
+                    if response.read(100).decode("ascii", "replace").strip() == expected:
+                        return True
+        except OSError:
+            pass
+        time.sleep(1)
+    return False
+
+
+def switch_to(release, expected):
+    temporary = ROOT / ".current.tmp"
+    try:
+        temporary.unlink(missing_ok=True)
+        temporary.symlink_to(release)
+        os.replace(temporary, CURRENT)
+        subprocess.run(["/usr/bin/systemctl", "restart", SERVICE], check=True, capture_output=True, timeout=120)
+    except (OSError, subprocess.SubprocessError) as error:
+        log(f"Activating {release.name} failed: {error}")
+        return False
+    return healthy(expected)
+
+
+def block(commit, reason):
+    blocked = STATE / "blocked"
+    blocked.mkdir(mode=0o700, exist_ok=True)
+    (blocked / commit).write_text(reason + "\n")
+
+
+def prune(keep):
+    releases = [path for path in RELEASES.iterdir() if path.is_dir() and not path.name.startswith(".")]
+    releases.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+    for path in releases[KEEP_RELEASES:]:
+        if path not in keep:
+            shutil.rmtree(path)
+            log(f"Removed old release {path.name}")
+
+
+def deploy(commit):
+    release = prepare(commit)
+    previous = deployed()
+    log(f"Activating {commit}")
+    if switch_to(release, commit):
+        if previous and previous != release:
+            write_json(STATE / "previous.json", {"release": str(previous)})
+        (STATE / "blocked" / commit).unlink(missing_ok=True)
+        prune({release, previous})
+        log(f"Deployed {commit}")
+        return
+    block(commit, "failed the post-deploy health check")
+    if previous and previous != release:
+        restored = switch_to(previous, None)
+        raise DeployError(f"{commit} failed its health check; rolled back to {previous.name}"
+                          + ("" if restored else ", which is also unhealthy"))
+    raise DeployError(f"{commit} failed its health check and there is no previous release")
+
+
+def rollback():
+    target = Path(read_json(STATE / "previous.json").get("release", ""))
+    current = deployed()
+    if not target.name or target.parent != RELEASES or not target.is_dir():
+        raise DeployError("no previous release is recorded")
+    if current == target:
+        raise DeployError("the previous release is already active")
+    if current:
+        block(revision(current), "rolled back by an operator")
+    if not switch_to(target, None):
+        raise DeployError(f"rollback to {target.name} failed its health check")
+    (STATE / "previous.json").unlink(missing_ok=True)
+    log(f"Rolled back to {target.name}; {revision(current) if current else 'the old release'} stays blocked")
+
+
+def automatic():
+    head = main_head()
+    current = deployed()
+    status = {"checked": int(time.time()), "main": head, "deployed": revision(current) if current else None}
+    try:
+        if current and revision(current) == head:
+            status["result"] = "current"
+            return
+        if (STATE / "blocked" / head).exists():
+            status["result"] = "blocked"
+            return
+        ci_path = STATE / "ci.json"
+        ci = read_json(ci_path)
+        if (ci.get("commit") == head and ci.get("result") == "failure"
+                and time.time() - ci.get("checked", 0) < CI_RECHECK_SECONDS):
+            status["result"] = "ci-failure"
+            return
+        result = ci_state(head)
+        write_json(ci_path, {"commit": head, "result": result, "checked": int(time.time())})
+        if result != "success":
+            status["result"] = f"ci-{result}"
+            log(f"Waiting for CI on {head}: {result}")
+            return
+        deploy(head)
+        status.update(result="deployed", deployed=head)
+    finally:
+        status.setdefault("result", "error")
+        write_json(STATE / "status.json", status)
+
+
+def show_status():
+    current = deployed()
+    blocked = STATE / "blocked"
+    print(json.dumps({
+        "deployed": revision(current) if current else None,
+        "release": str(current) if current else None,
+        "previous": read_json(STATE / "previous.json").get("release"),
+        "blocked": sorted(path.name for path in blocked.iterdir()) if blocked.is_dir() else [],
+        "last_check": read_json(STATE / "status.json"),
+    }, indent=2))
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Deploy verified RAKSENT releases from GitHub main.")
+    action = parser.add_mutually_exclusive_group()
+    action.add_argument("--status", action="store_true", help="show the deployed, previous and blocked releases")
+    action.add_argument("--rollback", action="store_true", help="restore the previous release and block the current commit")
+    action.add_argument("--release", metavar="SHA", help="deploy a commit that has a successful CI run")
+    args = parser.parse_args()
+    if args.release and not COMMIT.fullmatch(args.release):
+        parser.error("SHA must be a full 40-character lowercase commit hash")
+    STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if args.status:
+        show_status()
+        return 0
+    with open(STATE / "lock", "w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            log("Another deployment is in progress")
+            return 0
+        try:
+            if args.rollback:
+                rollback()
+            elif args.release:
+                if ci_state(args.release, main_push_only=False) != "success":
+                    raise DeployError(f"{args.release} has no successful CI run")
+                deploy(args.release)
+            else:
+                automatic()
+        except Unavailable as error:
+            log(f"GitHub is unavailable; retrying on the next run: {error}")
+        except DeployError as error:
+            log(f"Deployment failed: {error}")
+            return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

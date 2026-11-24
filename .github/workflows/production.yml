@@ -1,0 +1,43 @@
+name: Production
+on:
+  workflow_run:
+    workflows: [Test and scan]
+    types: [completed]
+    branches: [main]
+  schedule:
+    - cron: '7,22,37,52 * * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  release:
+    name: Verify release
+    if: github.event_name == 'workflow_run' && github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment:
+      name: production
+      url: https://raksent.com
+    concurrency:
+      group: production-release
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Wait for the VPS to deploy the commit, then check the public site
+        env:
+          REVISION: ${{ github.event.workflow_run.head_sha }}
+        run: bash scripts/check-production.sh --wait-for-revision "$REVISION"
+
+  monitor:
+    name: Monitor production
+    if: github.event_name != 'workflow_run'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check availability, redirects, headers, TLS and certificates
+        run: bash scripts/check-production.sh

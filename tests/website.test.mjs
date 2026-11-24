@@ -47,6 +47,11 @@ test('public routes, health, discoverability and browser headers', async () => {
   assert.equal((await request(server, '/assets/mark.svg')).headers['Content-Type'], 'image/svg+xml');
   assert.equal((await request(server, '/request-assessment/received')).status, 404);
   assert.equal((await request(server, '/readyz')).status, 200);
+  assert.equal((await request(server, '/version')).body, 'development\n');
+  const revision = 'a'.repeat(40);
+  const released = await request(website({ revision }), '/version');
+  assert.equal(released.body, `${revision}\n`);
+  assert.equal(released.headers['Cache-Control'], 'no-store');
   assert.equal((await request(server, '/unavailable')).status, 404);
   assert.equal((await request(server, '/', { method: 'HEAD' })).body, undefined);
   assert.equal((await request(server, '/', { method: 'DELETE' })).status, 405);

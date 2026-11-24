@@ -4,13 +4,14 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-bash -n scripts/inventory.sh scripts/validate.sh
+bash -n scripts/inventory.sh scripts/validate.sh scripts/check-production.sh
 node --test tests/website.test.mjs tests/theme.test.mjs
 node --check applications/portal/public/portal.js
 python3 - <<'PY'
 from pathlib import Path
 
-for filename in ("applications/api/app.py", "tests/portal_smoke.py"):
+for filename in ("applications/api/app.py", "tests/portal_smoke.py", "infrastructure/ansible/files/raksent-deploy"):
     source = Path(filename).read_bytes()
     compile(source, filename, "exec")
 PY
+python3 -m unittest discover -s tests -p 'test_*.py'

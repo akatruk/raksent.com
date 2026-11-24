@@ -1,26 +1,39 @@
-# Merge this into the existing ingress configuration only after the VPS audit.
-# A conflicting site block or listener requires a separate migration plan.
+# Managed by infrastructure/ansible/site.yml; local edits are overwritten.
 (raksent_letsencrypt) {
 	tls {
 		issuer acme https://acme-v02.api.letsencrypt.org/directory
 	}
 }
 
+(raksent_access_log) {
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 10MiB
+			roll_keep 10
+			roll_keep_for 336h
+		}
+		format json
+	}
+}
+
 raksent.com {
 	import raksent_letsencrypt
+	import raksent_access_log
 	encode zstd gzip
 	header {
 		Strict-Transport-Security "max-age=31536000"
 		-X-Powered-By
 		-Server
+		-Via
 	}
 	@internal path /readyz
 	respond @internal 404
 	reverse_proxy 127.0.0.1:18080
 }
 
-# Use this block only after checking the existing www site and certificate.
 www.raksent.com {
 	import raksent_letsencrypt
+	import raksent_access_log
+	header -Server
 	redir https://raksent.com{uri} permanent
 }

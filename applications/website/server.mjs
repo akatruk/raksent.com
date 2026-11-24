@@ -92,7 +92,7 @@ async function readBody(req, limit) {
   return Buffer.concat(chunks).toString('utf8');
 }
 
-export function website({ origin = publicOrigin, leadDirectory, trustProxy = false } = {}) {
+export function website({ origin = publicOrigin, leadDirectory, trustProxy = false, revision = 'development' } = {}) {
   let windowStarted = 0;
   let totalPosts = 0;
   let storing = false;
@@ -174,6 +174,7 @@ export function website({ origin = publicOrigin, leadDirectory, trustProxy = fal
       }
       return send(req, res, 200, 'ok\n', 'text/plain; charset=utf-8');
     }
+    if (path === '/version') return send(req, res, 200, `${revision}\n`, 'text/plain; charset=utf-8');
     if (assets.has(path)) {
       const [type, body] = assets.get(path);
       return send(req, res, 200, body, type);
@@ -220,5 +221,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   const leadDirectory = process.env.LEAD_DIR;
   if (leadDirectory) await access(leadDirectory, constants.W_OK);
   const port = Number(process.env.PORT || 8080);
-  website({ origin, leadDirectory, trustProxy: process.env.TRUST_PROXY === '1' }).listen(port, process.env.HOST || '127.0.0.1');
+  const release = process.env.RELEASE_REVISION || '';
+  const revision = /^[0-9a-f]{40}$/.test(release) ? release : 'development';
+  website({ origin, leadDirectory, trustProxy: process.env.TRUST_PROXY === '1', revision }).listen(port, process.env.HOST || '127.0.0.1');
 }

@@ -1,0 +1,11 @@
+# Managed by infrastructure/ansible/site.yml; local edits are overwritten.
+[Unit]
+Description=Check GitHub main for a verified RAKSENT release
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=2min
+RandomizedDelaySec=15s
+
+[Install]
+WantedBy=timers.target

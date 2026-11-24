@@ -1,0 +1,268 @@
+---
+- name: Configure the RAKSENT production host
+  hosts: raksent
+  gather_facts: true
+  vars:
+    node_version: 24.22.3
+    node_sha256: 4f2b175a6d53a5c617a80dba2676238a0688cef28c6da4eba35c7d844e66fcfb
+    caddy_version: 2.11.9
+    caddy_sha512: 0e85544340290a16ce4bfb76fe7d65e9de1bf3a6e67f5ccfff30b30d27ea4c73e078077b7bf3e58ae60b6b12e44327705287059c775bca5782e8ee85ea7edd75
+    runtime_dir: /opt/raksent/runtime
+    node_dir: "{{ runtime_dir }}/node-v{{ node_version }}-linux-x64"
+    caddy_dir: "{{ runtime_dir }}/caddy-v{{ caddy_version }}"
+    # Name of an existing directory under /opt/raksent/releases to activate when /opt/raksent/current is missing.
+    bootstrap_release: ""
+  tasks:
+    - name: Require Ubuntu 22.04 or later
+      ansible.builtin.assert:
+        that:
+          - ansible_distribution == 'Ubuntu'
+          - ansible_distribution_version is version('22.04', '>=')
+          - ansible_architecture == 'x86_64'
+
+    - name: Create service accounts
+      ansible.builtin.user:
+        name: "{{ item.name }}"
+        system: true
+        home: "{{ item.home }}"
+        create_home: false
+        shell: /usr/sbin/nologin
+      loop:
+        - {name: raksent, home: /var/lib/raksent}
+        - {name: caddy, home: /var/lib/caddy}
+
+    - name: Create application directories
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: "{{ item.owner | default('root') }}"
+        group: "{{ item.owner | default('root') }}"
+        mode: "{{ item.mode | default('0755') }}"
+      loop:
+        - {path: /opt/raksent}
+        - {path: /opt/raksent/releases}
+        - {path: "{{ runtime_dir }}"}
+        - {path: "{{ caddy_dir }}"}
+        - {path: /etc/caddy}
+        - {path: /etc/systemd/journald.conf.d}
+        - {path: /var/lib/raksent, owner: raksent, mode: '0700'}
+        - {path: /var/lib/raksent/leads, owner: raksent, mode: '0700'}
+        - {path: /var/lib/caddy, owner: caddy, mode: '0750'}
+
+    - name: Check the Node.js runtime
+      ansible.builtin.stat:
+        path: "{{ node_dir }}/bin/node"
+      register: node_binary
+
+    - name: Install Node.js {{ node_version }}
+      when: not node_binary.stat.exists
+      block:
+        - name: Download Node.js
+          ansible.builtin.get_url:
+            url: "https://nodejs.org/dist/v{{ node_version }}/node-v{{ node_version }}-linux-x64.tar.xz"
+            dest: /root/node.tar.xz
+            checksum: "sha256:{{ node_sha256 }}"
+            mode: '0600'
+        - name: Unpack Node.js
+          ansible.builtin.unarchive:
+            src: /root/node.tar.xz
+            dest: "{{ runtime_dir }}"
+            remote_src: true
+            extra_opts: [--no-same-owner]
+
+    - name: Remove package managers from the production runtime
+      ansible.builtin.file:
+        path: "{{ node_dir }}/{{ item }}"
+        state: absent
+      loop: [bin/npm, bin/npx, bin/corepack, lib/node_modules]
+
+    - name: Keep the Node.js runtime owned by root
+      ansible.builtin.file:
+        path: "{{ node_dir }}"
+        owner: root
+        group: root
+        recurse: true
+
+    - name: Activate Node.js {{ node_version }}
+      ansible.builtin.file:
+        src: "node-v{{ node_version }}-linux-x64"
+        dest: "{{ runtime_dir }}/node"
+        state: link
+      notify: Restart website
+
+    - name: Check the Caddy binary
+      ansible.builtin.stat:
+        path: "{{ caddy_dir }}/caddy"
+      register: caddy_binary
+
+    - name: Install Caddy {{ caddy_version }}
+      when: not caddy_binary.stat.exists
+      block:
+        - name: Download Caddy
+          ansible.builtin.get_url:
+            url: "https://github.com/caddyserver/caddy/releases/download/v{{ caddy_version }}/caddy_{{ caddy_version }}_linux_amd64.tar.gz"
+            dest: /root/caddy.tar.gz
+            checksum: "sha512:{{ caddy_sha512 }}"
+            mode: '0600'
+        - name: Unpack Caddy
+          ansible.builtin.unarchive:
+            src: /root/caddy.tar.gz
+            dest: "{{ caddy_dir }}"
+            remote_src: true
+            include: [caddy]
+            extra_opts: [--no-same-owner]
+
+    - name: Check the active Caddy path
+      ansible.builtin.stat:
+        path: "{{ runtime_dir }}/caddy"
+      register: caddy_path
+
+    - name: Keep a manually installed Caddy binary for rollback
+      ansible.builtin.copy:
+        src: "{{ runtime_dir }}/caddy"
+        dest: "{{ runtime_dir }}/caddy-previous"
+        remote_src: true
+        mode: '0755'
+        force: false
+      when: caddy_path.stat.exists and caddy_path.stat.isreg
+
+    - name: Activate Caddy {{ caddy_version }}
+      ansible.builtin.file:
+        src: "caddy-v{{ caddy_version }}/caddy"
+        dest: "{{ runtime_dir }}/caddy"
+        state: link
+        force: true
+      notify: Restart Caddy
+
+    - name: Remove installer archives
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /root/node.tar.xz
+        - /root/caddy.tar.gz
+        - "{{ runtime_dir }}/node-v{{ node_version }}-linux-x64.tar.xz"
+        - "{{ runtime_dir }}/SHASUMS256.txt"
+
+    - name: Install the release deployment agent
+      ansible.builtin.copy:
+        src: raksent-deploy
+        dest: /usr/local/sbin/raksent-deploy
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Install the website unit
+      ansible.builtin.copy:
+        src: raksent-website.service
+        dest: /etc/systemd/system/raksent-website.service
+        mode: '0644'
+      notify: [Reload systemd, Restart website]
+
+    - name: Install the Caddy unit
+      ansible.builtin.copy:
+        src: caddy.service
+        dest: /etc/systemd/system/caddy.service
+        mode: '0644'
+      notify: Restart Caddy
+
+    - name: Install the deployment units
+      ansible.builtin.copy:
+        src: "{{ item }}"
+        dest: "/etc/systemd/system/{{ item }}"
+        mode: '0644'
+      loop: [raksent-deploy.service, raksent-deploy.timer]
+      notify: Reload systemd
+
+    - name: Install the Caddyfile
+      ansible.builtin.copy:
+        src: Caddyfile
+        dest: /etc/caddy/Caddyfile
+        mode: '0644'
+        validate: "{{ runtime_dir }}/caddy validate --adapter caddyfile --config %s"
+      notify: Restart Caddy
+
+    - name: Check the active release link
+      ansible.builtin.stat:
+        path: /opt/raksent/current
+      register: current_release
+
+    - name: Link the existing release as current
+      ansible.builtin.file:
+        src: "/opt/raksent/releases/{{ bootstrap_release }}"
+        dest: /opt/raksent/current
+        state: link
+      when: not current_release.stat.exists and bootstrap_release | length > 0
+      notify: Restart website
+
+    - name: Apply kernel network hardening
+      ansible.builtin.copy:
+        src: 60-raksent-hardening.conf
+        dest: /etc/sysctl.d/60-raksent-hardening.conf
+        mode: '0644'
+      notify: Apply sysctl
+
+    - name: Limit and persist the journal
+      ansible.builtin.copy:
+        src: 60-raksent-journald.conf
+        dest: /etc/systemd/journald.conf.d/60-raksent.conf
+        mode: '0644'
+      notify: Restart journald
+
+    - name: Apply pending service changes
+      ansible.builtin.meta: flush_handlers
+
+    - name: Enable the ingress, website and release timer
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        enabled: true
+      loop: [caddy.service, raksent-website.service, raksent-deploy.timer]
+
+    - name: Start Caddy and the release timer
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        state: started
+      loop: [caddy.service, raksent-deploy.timer]
+
+    - name: Check the website on loopback
+      ansible.builtin.uri:
+        url: http://127.0.0.1:18080/readyz
+      register: website_ready
+      retries: 15
+      delay: 2
+      until: website_ready.status == 200
+      when: current_release.stat.exists or bootstrap_release | length > 0
+
+    - name: Check HTTPS through Caddy
+      ansible.builtin.command:
+        argv: [curl, --fail, --silent, --show-error, --output, /dev/null, --resolve, "raksent.com:443:127.0.0.1", "https://raksent.com/"]
+      changed_when: false
+      register: https_check
+      retries: 10
+      delay: 3
+      until: https_check.rc == 0
+      when: current_release.stat.exists or bootstrap_release | length > 0
+
+  handlers:
+    - name: Apply sysctl
+      ansible.builtin.command: sysctl --system
+      changed_when: true
+
+    - name: Restart journald
+      ansible.builtin.systemd:
+        name: systemd-journald
+        state: restarted
+
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Restart website
+      ansible.builtin.command: systemctl try-restart raksent-website.service
+      changed_when: true
+
+    - name: Restart Caddy
+      ansible.builtin.systemd:
+        name: caddy
+        state: restarted
+        daemon_reload: true
