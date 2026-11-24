@@ -137,3 +137,64 @@ test('invalid submissions show field errors and preserve only escaped values', a
   assert.ok(result.body.includes('value="cloud-security" selected'));
   assert.deepEqual(await readdir(directory), []);
 });
+
+test('visitors can follow the server-rendered journey and receive the saved inquiry reference', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'raksent-journey-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const server = website({ leadDirectory: directory });
+
+  const home = await request(server, '/');
+  const catalogPath = home.body.match(/href="([^"]+)">Explore services<\/a>/)?.[1];
+  assert.equal(catalogPath, '/services');
+
+  const catalog = await request(server, catalogPath);
+  const filterPath = catalog.body.match(/href="([^"]+)">Harden systems<\/a>/)?.[1];
+  assert.equal(filterPath, '/services?group=harden');
+  const filtered = await request(server, filterPath);
+  const servicePath = filtered.body.match(/href="([^"]+)">Cloud Security<\/a>/)?.[1];
+  assert.equal(servicePath, '/services/cloud-security');
+
+  const service = await request(server, servicePath);
+  const intro = service.body.match(/<section class="page-intro">[\s\S]+?<\/section>/)?.[0];
+  const assessmentPath = intro?.match(/href="([^"]+)">Request an assessment<\/a>/)?.[1];
+  assert.equal(assessmentPath, '/request-assessment?service=cloud-security');
+  assert.match(service.body, /What we cover[\s\S]+What you receive[\s\S]+After you request an assessment/);
+
+  const assessment = await request(server, assessmentPath);
+  assert.match(assessment.body, /value="cloud-security" selected/);
+  assert.match(assessment.body, /<select id="service" name="service" required>/);
+  assert.match(assessment.body, /All fields are required/);
+  assert.match(assessment.body, /omit credentials, customer data and technical evidence/);
+
+  const inquiry = new URLSearchParams(validBody);
+  inquiry.set('service', 'devsecops');
+  inquiry.set('message', 'short');
+  const post = () => request(server, '/request-assessment', {
+    method: 'POST',
+    headers: { origin, 'content-type': 'application/x-www-form-urlencoded' },
+    body: inquiry.toString(),
+  });
+
+  const invalid = await post();
+  assert.equal(invalid.status, 400);
+  assert.match(invalid.body, /href="#message"/);
+  assert.match(invalid.body, /value="devsecops" selected/);
+  assert.match(invalid.body, />short<\/textarea>/);
+  assert.deepEqual(await readdir(directory), []);
+
+  inquiry.set('message', 'Review our synthetic CI workflows.');
+  const accepted = await post();
+  assert.equal(accepted.status, 303);
+  const confirmation = await request(server, accepted.headers.Location);
+  const reference = confirmation.body.match(/<code>([a-f0-9-]+)<\/code>/)?.[1];
+  assert.ok(reference);
+  assert.equal(confirmation.status, 200);
+  assert.match(confirmation.body, /Inquiry reference/);
+  assert.match(confirmation.body, /name="robots" content="noindex,follow"/);
+  assert.match(confirmation.body, new RegExp(`rel="canonical" href="${origin}/request-assessment"`));
+  const [record] = await readdir(directory);
+  assert.equal(record, `${reference}.json`);
+  const saved = JSON.parse(await readFile(join(directory, record), 'utf8'));
+  assert.equal(saved.id, reference);
+  assert.equal(saved.service, 'devsecops');
+});
