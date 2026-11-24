@@ -10,9 +10,14 @@ try {
 } catch {
   // The system preference is available when storage is restricted.
 }
-setTheme(['light', 'dark'].includes(savedTheme) ? savedTheme : preference.matches ? 'light' : 'dark');
+let followsSystem = !['light', 'dark'].includes(savedTheme);
+setTheme(followsSystem ? preference.matches ? 'light' : 'dark' : savedTheme);
+preference.addEventListener('change', event => {
+  if (followsSystem) setTheme(event.matches ? 'light' : 'dark');
+});
 themeButton.hidden = false;
 themeButton.addEventListener('click', () => {
+  followsSystem = false;
   const theme = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
   setTheme(theme);
   try {

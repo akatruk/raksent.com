@@ -13,11 +13,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Check website and inventory
-        run: |
-          bash -n scripts/inventory.sh
-          node --test tests/website.test.mjs
-          node --check applications/portal/public/portal.js
-          python3 -m py_compile applications/api/app.py tests/portal_smoke.py
+        run: bash scripts/validate.sh
       - name: Build services and verify application boundaries
         env:
           POSTGRES_PASSWORD: ci-admin-ephemeral

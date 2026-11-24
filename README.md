@@ -16,11 +16,12 @@ RAKSENT's corporate website, client portal MVP and VPS operations configuration.
 Use Node.js 24 or later, Python 3.12 and Docker Compose v2 for the complete check.
 
 ```sh
-node --test tests/website.test.mjs
-bash -n scripts/inventory.sh
-python3 -m py_compile applications/api/app.py tests/portal_smoke.py
+bash scripts/validate.sh
 docker compose -f infrastructure/docker/compose.yaml config --quiet
 ```
+
+The validation script runs the website tests and checks Bash, portal JavaScript
+and Python syntax. CI uses the same script before its Docker integration checks.
 
 For a local website preview:
 
