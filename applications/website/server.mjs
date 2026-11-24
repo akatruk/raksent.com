@@ -20,6 +20,7 @@ const receiptPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-
 const assetSpecs = [
   ['/assets/site.css', 'site.css', 'text/css; charset=utf-8'],
   ['/assets/theme.js', 'theme.js', 'text/javascript; charset=utf-8'],
+  ['/assets/site.js', 'site.js', 'text/javascript; charset=utf-8'],
   ['/assets/mark.svg', 'mark.svg', 'image/svg+xml'],
   ['/assets/perimeter.jpg', 'perimeter.jpg', 'image/jpeg'],
 ];

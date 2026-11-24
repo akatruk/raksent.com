@@ -5,7 +5,7 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 bash -n scripts/inventory.sh scripts/validate.sh scripts/check-production.sh
-node --test tests/website.test.mjs tests/theme.test.mjs
+node --test tests/website.test.mjs tests/theme.test.mjs tests/site.test.mjs
 node --check applications/portal/public/portal.js
 python3 - <<'PY'
 from pathlib import Path

@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtemp, readdir, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -45,6 +46,7 @@ test('public routes, health, discoverability and browser headers', async () => {
   assert.equal((await request(server, '/assets/site.css')).status, 200);
   assert.equal((await request(server, '/assets/perimeter.jpg')).headers['Content-Type'], 'image/jpeg');
   assert.equal((await request(server, '/assets/mark.svg')).headers['Content-Type'], 'image/svg+xml');
+  assert.equal((await request(server, '/assets/site.js')).headers['Content-Type'], 'text/javascript; charset=utf-8');
   assert.equal((await request(server, '/request-assessment/received')).status, 404);
   assert.equal((await request(server, '/readyz')).status, 200);
   assert.equal((await request(server, '/version')).body, 'development\n');
@@ -55,6 +57,71 @@ test('public routes, health, discoverability and browser headers', async () => {
   assert.equal((await request(server, '/unavailable')).status, 404);
   assert.equal((await request(server, '/', { method: 'HEAD' })).body, undefined);
   assert.equal((await request(server, '/', { method: 'DELETE' })).status, 405);
+});
+
+test('pages load versioned self-hosted assets and keep scripts and styles out of the markup', async () => {
+  const server = website({ leadDirectory: 'unused-by-get' });
+  const pages = await Promise.all([...pagePaths, '/missing'].map(path => request(server, path)));
+  for (const { body } of pages) {
+    assert.doesNotMatch(body, /\sstyle=|<style|<script(?![^>]*\ssrc=)|\son[a-z]+=|javascript:|undefined/i);
+    assert.match(body, /<script src="\/assets\/theme\.js\?v=[0-9a-f]{12}"><\/script>\n<link rel="stylesheet" href="\/assets\/site\.css\?v=[0-9a-f]{12}">\n<script src="\/assets\/site\.js\?v=[0-9a-f]{12}" defer><\/script>/);
+  }
+  for (const file of ['site.css', 'theme.js', 'site.js']) {
+    const content = await readFile(new URL(`../applications/website/public/${file}`, import.meta.url));
+    const path = `/assets/${file}?v=${createHash('sha256').update(content).digest('hex').slice(0, 12)}`;
+    assert.ok(pages[0].body.includes(`"${path}"`), file);
+    const asset = await request(server, path);
+    assert.equal(asset.status, 200);
+    assert.equal(asset.headers['Cache-Control'], 'public, max-age=3600');
+    assert.equal(asset.body, content.toString());
+  }
+});
+
+test('the main navigation is reachable on every screen size without scripts', async () => {
+  const server = website({ leadDirectory: 'unused-by-get' });
+  for (const path of pagePaths) {
+    const { body } = await request(server, path);
+    const desktop = body.match(/<nav class="site-nav" aria-label="Main navigation">([\s\S]*?)<\/nav>/)?.[1];
+    const menu = body.match(/<details class="menu"><summary aria-label="Menu">[\s\S]*?<nav aria-label="Menu">([\s\S]*?)<\/nav>/)?.[1];
+    assert.ok(desktop, path);
+    assert.equal(menu, desktop, path);
+    for (const href of ['/services', '/methodology', '/about', '/contact']) assert.ok(desktop.includes(`href="${href}"`), path);
+  }
+  const { body } = await request(server, '/services/devsecops');
+  assert.match(body, /aria-label="Main navigation"><a href="\/services" aria-current="page">Services<\/a>/);
+  assert.match(body, /<a href="\/services">Security services<\/a><\/li><li><a href="\/services\?group=harden">Harden systems<\/a>/);
+});
+
+test('calls to action on the inquiry page keep a started inquiry instead of reloading it', async () => {
+  for (const server of [website({ leadDirectory: 'unused-by-get' }), website()]) {
+    const { body } = await request(server, '/request-assessment');
+    assert.match(body, /<section class="shell section form-layout" id="inquiry">/);
+    const targets = [...body.matchAll(/href="([^"]+)"[^>]*>Request an assessment<\/a>/g)].map(match => match[1]);
+    assert.equal(targets.length, 3);
+    assert.deepEqual(new Set(targets), new Set(['#inquiry']));
+  }
+  const { body } = await request(website(), '/about');
+  assert.match(body, /class="button button-small header-cta" href="\/request-assessment">Request an assessment<\/a>/);
+});
+
+test('service cards expose one link each with a decorative icon and action label', async () => {
+  const { body } = await request(website(), '/');
+  const cards = body.match(/<article class="card">[\s\S]*?<\/article>/g);
+  assert.equal(cards.length, services.length);
+  for (const card of cards) {
+    assert.equal(card.match(/<a /g).length, 1);
+    assert.match(card, /<h3><a class="card-link" href="\/services\/[a-z-]+">/);
+    assert.match(card, /<svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><(path|circle) /);
+    assert.match(card, /<span class="card-action" aria-hidden="true">View service<\/span>/);
+  }
+});
+
+test('the not-found page is neither indexed nor canonicalized', async () => {
+  const { status, body } = await request(website(), '/missing');
+  assert.equal(status, 404);
+  assert.match(body, /name="robots" content="noindex,follow"/);
+  assert.doesNotMatch(body, /rel="canonical"|og:url/);
+  assert.match(body, /href="\/">Return to the home page<\/a>/);
 });
 
 test('inquiries are validated and the accepted record is saved privately', async t => {
